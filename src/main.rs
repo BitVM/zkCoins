@@ -10,16 +10,18 @@ use plonky2::plonk::proof::ProofWithPublicInputs;
 
 type ProofTuple<F, C, const D: usize> = (
     ProofWithPublicInputs<F, C, D>,
-    VerifierOnlyCircuitData<C, D>,
     CommonCircuitData<F, D>,
 );
 
-fn prove_statement<F: RichField + Extendable<D>, C: GenericConfig<D, F = F>, const D: usize>() -> Result<ProofTuple<F, C, D>> {
+// TODO replace 4 and 7 by variables and then test recursive verification
+
+fn prove_statement<F: RichField + Extendable<D>, C: GenericConfig<D, F = F>, const D: usize>(verify_previous_proof: bool, previous_proof: &ProofTuple<F, C, D>) -> Result<ProofTuple<F, C, D>> {
     let config = CircuitConfig::standard_recursion_config();
     let mut builder = CircuitBuilder::<F, D>::new(config);
-
+    
     // The arithmetic circuit.
     let x = builder.add_virtual_target();
+    let verify_condition = builder.constant_bool(verify_previous_proof);
     let a = builder.mul(x, x);
     let b = builder.mul_const(F::from_canonical_u32(4), x);
     let c = builder.mul_const(F::NEG_ONE, b);
@@ -29,8 +31,16 @@ fn prove_statement<F: RichField + Extendable<D>, C: GenericConfig<D, F = F>, con
     // Public inputs are the initial value (provided below) and the result (which is generated).
     builder.register_public_input(x);
     builder.register_public_input(e);
+    builder.register_public_input(verify_condition);
+
     let mut pw = PartialWitness::new();
     pw.set_target(x, F::from_canonical_u32(1));
+
+    // recursive verification
+    let (previous_proof, previous_cd) = previous_proof;
+    let pt = builder.add_virtual_proof_with_pis(previous_cd);
+    builder.conditionally_verify_proof_or_dummy::<C>(verify_condition, &pt, &previous_vd, previous_cd);
+
     let data = builder.build::<C>();
     let proof = data.prove(pw)?;
     Ok((proof, data.verifier_only, data.common))
@@ -43,12 +53,14 @@ fn main() -> Result<()> {
     type C = PoseidonGoldilocksConfig;
     type F = <C as GenericConfig<D>>::F;
     
-    let (proof, verifier_only_data, common_data) = prove_statement::<F, C, D>()?;
+    let proof = prove_statement::<F, C, D>(false, None)?;
+
+    let next_proof = prove_statement::<F, C, D>(true, &proof)?;
 
     println!(
         "x² - 4 *x + 7 where x = {} is {}",
         proof.public_inputs[0],
         proof.public_inputs[1]
     );
-    verifier_only_data.verify(proof)
+    verifier_only_data.verify(next_proof)
 }
