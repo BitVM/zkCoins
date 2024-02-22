@@ -1,5 +1,7 @@
 use anyhow::Result;
 use plonky2::field::extension::Extendable;
+use plonky2::gates::constant::ConstantGate;
+use plonky2::gates::gate::GateRef;
 //use plonky2::field::types::Field;
 use plonky2::gates::noop::NoopGate;
 use plonky2::hash::hash_types::RichField;
@@ -30,14 +32,14 @@ where
     let data = builder.build::<C>();
 
     let config = CircuitConfig::standard_recursion_config();
+    let num_consts = config.num_constants;
     let mut builder = CircuitBuilder::<F, D>::new(config);
     let proof = builder.add_virtual_proof_with_pis(&data.common);
     let verifier_data = builder.add_virtual_verifier_data(data.common.config.fri_config.cap_height);
     builder.verify_proof::<C>(&proof, &verifier_data, &data.common);
     builder.verify_proof::<C>(&proof, &verifier_data, &data.common);
-    while builder.num_gates() < 1 << 12 {
-        builder.add_gate(NoopGate, vec![]);
-    }
+    builder.verify_proof::<C>(&proof, &verifier_data, &data.common);
+    builder.add_gate_to_gate_set(GateRef::new(ConstantGate::new(num_consts)));
     builder.build::<C>().common
 }
 
