@@ -2,15 +2,16 @@ use anyhow::Result;
 use plonky2::field::extension::Extendable;
 use plonky2::gates::constant::ConstantGate;
 use plonky2::gates::gate::GateRef;
-//use plonky2::field::types::Field;
+use plonky2::field::types::Field;
 use plonky2::gates::noop::NoopGate;
 use plonky2::hash::hash_types::RichField;
-//use plonky2::iop::witness::{PartialWitness, WitnessWrite};
+use plonky2::iop::witness::{PartialWitness, WitnessWrite};
 use plonky2::plonk::circuit_builder::CircuitBuilder;
 use plonky2::plonk::circuit_data::{CircuitConfig, CommonCircuitData};
 use plonky2::plonk::config::{AlgebraicHasher, GenericConfig, PoseidonGoldilocksConfig};
-//use plonky2::recursion::cyclic_recursion::check_cyclic_proof_verifier_data;
-//use plonky2::recursion::dummy_circuit::cyclic_base_proof;
+use plonky2::recursion::cyclic_recursion::check_cyclic_proof_verifier_data;
+use plonky2::recursion::dummy_circuit::cyclic_base_proof;
+use std::time::SystemTime;
 
 fn common_data_for_recursion<
     F: RichField + Extendable<D>,
@@ -56,6 +57,8 @@ fn main() -> Result<()> {
     type C = PoseidonGoldilocksConfig;
     type F = <C as GenericConfig<D>>::F;
 
+    let check0 = SystemTime::now();
+
     let config = CircuitConfig::standard_recursion_config();
     let mut builder = CircuitBuilder::<F, D>::new(config);
 
@@ -64,7 +67,7 @@ fn main() -> Result<()> {
     let output_value = builder.add_virtual_public_input();
 
     // TODO: Is the return value supposed to be unused?
-    let _verifier_data_target = builder.add_verifier_data_public_inputs();
+    let verifier_data_target = builder.add_verifier_data_public_inputs();
     
     let mut common_data = common_data_for_recursion::<F, C, D>();
     common_data.num_public_inputs = builder.num_public_inputs();
@@ -113,6 +116,67 @@ fn main() -> Result<()> {
     // TODO: Generate dummy proof with cyclic_base_proof
     // https://docs.rs/plonky2/0.1.4/plonky2/recursion/dummy_circuit/fn.cyclic_base_proof.html
 
-    let _cyclic_circuit_data = builder.build::<C>();
+    let cyclic_circuit_data = builder.build::<C>();
+    let check1 = SystemTime::now();
+    println!("Constructed Circuit Builder {}", check1.duration_since(check0).unwrap().as_secs());
+
+    // Construct Base Proof
+    let mut pw = PartialWitness::new();
+    let initial_targets = [F::ZERO];
+    let initial_targets_pis = initial_targets.into_iter().enumerate().collect();
+    
+    let initial_other_targets = [F::ZERO];
+    let initial_other_targets_pis = initial_targets.into_iter().enumerate().collect();
+
+    pw.set_bool_target(verify_proofs, false);
+    pw.set_proof_with_pis_target::<C, D>(
+        &inner_cyclic_proof_with_pis,
+        &cyclic_base_proof(
+            &common_data,
+            &cyclic_circuit_data.verifier_only,
+            initial_targets_pis,
+        ),
+    );
+    pw.set_proof_with_pis_target::<C, D>(
+        &other_proof_with_pis,
+        &cyclic_base_proof(
+            &common_data,
+            &cyclic_circuit_data.verifier_only,
+            initial_other_targets_pis,
+        ),
+    );
+    pw.set_verifier_data_target(&verifier_data_target, &cyclic_circuit_data.verifier_only);
+    let proof = cyclic_circuit_data.prove(pw)?;
+    let check2 = SystemTime::now();
+    println!("Constructed Proof, {}", check2.duration_since(check1).unwrap().as_secs());
+
+    check_cyclic_proof_verifier_data(
+        &proof,
+        &cyclic_circuit_data.verifier_only,
+        &cyclic_circuit_data.common,
+        )?;
+    cyclic_circuit_data.verify(proof.clone())?;
+    let check3 = SystemTime::now();
+    println!("Verified Base Proof, {}", check3.duration_since(check2).unwrap().as_secs());
+    
+    // Construct 1st Level Proof
+    let mut pw = PartialWitness::new();
+    pw.set_bool_target(verify_proofs, true);
+    pw.set_proof_with_pis_target::<C, D>(&inner_cyclic_proof_with_pis, &proof);
+    pw.set_proof_with_pis_target::<C, D>(&other_proof_with_pis, &proof);
+    pw.set_verifier_data_target(&verifier_data_target, &cyclic_circuit_data.verifier_only);
+    let proof = cyclic_circuit_data.prove(pw)?;
+    let check4 = SystemTime::now();
+    println!("Constructed Proof, {}", check4.duration_since(check3).unwrap().as_secs());
+
+    check_cyclic_proof_verifier_data(
+        &proof,
+        &cyclic_circuit_data.verifier_only,
+        &cyclic_circuit_data.common,
+        )?;
+    cyclic_circuit_data.verify(proof.clone())?;
+    let check5 = SystemTime::now();
+    println!("Verifier 1st Layer Proof, {}", check5.duration_since(check4).unwrap().as_secs());
+
     Ok(())
 }
